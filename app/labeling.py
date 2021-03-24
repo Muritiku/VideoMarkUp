@@ -1,13 +1,13 @@
 import os
+import time
 import numpy as np
 import cv2
 import h5py
 import streamlit as st
 import vtools as vt
 from albumentations.augmentations.functional import brightness_contrast_adjust, clahe
-
+from csv import reader
 from utils import config_page, get_arguments, title, Stage
-
 
 def labeling():
     title(stage=Stage.LABELING)
@@ -27,7 +27,8 @@ def labeling():
     for row in range(n_rows):
         row_frame_no = frame_no + row * images_per_row * stride
         show_images(row_frame_no, frames, N=images_per_row, stride=stride,
-                    image_transforms=image_transforms, frame_arrow=(row == 0))
+                    image_transforms=image_transforms, frame_arrow=(row == 0),
+                    track_id=track_id, save_filename=os.path.basename(data_path)[:-3])
 
     # Create file with marked data
     adding_sequences(frames, track_id, save_filename=os.path.basename(data_path)[:-3])
@@ -85,22 +86,72 @@ def choose_data(data_dir):
     data_file = st.sidebar.selectbox("", options=files)
     return os.path.join(data_dir, data_file)
 
+def load_classes(save_filename):
+    classes = {}
+    if save_filename:
+        path = os.path.join("../output/", save_filename + ".txt")
+        if os.path.exists(path):
+            with open(path, "r") as file:
+                csv_reader = reader(file)
+                for row in csv_reader:
+                    if row[0] not in classes:
+                        classes[row[0]] = {}
+                    classes[row[0]][row[1]] = int(row[2])
+    return classes
+
+def save_classes(classes, save_filename):
+    with open(os.path.join("../output/", save_filename + ".txt"), "w") as file:
+        for track, track_val in classes.items():
+            for frame, frame_class in track_val.items():
+                file.write(str(track) + "," + str(frame) + "," + str(frame_class) + "\n")
 
 def adding_sequences(frames, track_id, save_filename):
+    state = st.experimental_get_query_params()
+    new_first_frame = new_last_frame = 0
+    if "new_first_frame" in state:
+        new_first_frame = int(state['new_first_frame'][0])
+        new_last_frame = new_first_frame
+    
+    classes = load_classes(save_filename)
+    if str(track_id) not in classes:
+        classes[str(track_id)] = {}
+
     columns = st.beta_columns(3)
     with columns[0]:
         visible_number = st.number_input("Visible number", min_value=-1)
     with columns[1]:
-        first_frame = st.number_input("First frame", min_value=0)
+        col1 = st.empty()
     with columns[2]:
-        last_frame = st.number_input("Last frame", min_value=0)
-    add_string_button = st.button("Add this sequence")
-    if add_string_button:
-        with open(os.path.join("../output/", save_filename + ".txt"), "a+") as file:
-            for i in range(first_frame, last_frame + 1):
-                file.write(str(track_id) + "," + str(i) + "," +
-                           str(visible_number) + "\n")
+        col2 = st.empty()
+    first_frame = col1.number_input("First frame", value=new_first_frame, min_value=0, step=5, key="first_frame")
+    last_frame = col2.number_input("Last frame", value=new_last_frame, min_value=0, step=5, key="last_frame")
 
+    with columns[0]:
+        add_class_number = st.button("Number visible")
+        add_class_minus1 = st.button("-1: Human absent")
+    with columns[1]:
+        add_class_1001 = st.button("1001: Number absent")
+        add_class_1000 = st.button("1000: Number is unrecognizable")
+    
+    if add_class_number or add_class_minus1 or add_class_1001 or add_class_1000:
+        class_to_save = -1
+        if add_class_number:
+            class_to_save = str(visible_number)
+        elif add_class_1000:
+            class_to_save = str(1000)
+        elif add_class_1001:
+            class_to_save = str(1001)
+
+        for i in range(int(first_frame), int(last_frame) + 1):
+            classes[str(track_id)][str(i)] = class_to_save
+
+        save_classes(classes, save_filename)
+
+        new_first_frame = last_frame + 5 if last_frame < len(frames) else 0
+        new_last_frame = new_first_frame
+        first_frame = col1.number_input("First frame", value=new_first_frame, min_value=0, step=5, key="first_frame")
+        last_frame = col2.number_input("Last frame", value=new_last_frame, min_value=0, step=5, key="last_frame")
+        st.experimental_set_query_params(new_first_frame=new_first_frame)
 
 def get_track_ids(data_path):
     file = h5py.File(data_path, "r+")
@@ -140,7 +191,8 @@ def choose_frame_no(max_val, step=10):
 
 
 def show_images(frame_no, frames, N=19, stride=1, image_transforms=None,
-                show_caption=True, frame_arrow=True):
+                show_caption=True, frame_arrow=True, track_id=None, save_filename=None):
+    classes = load_classes(save_filename)
     hsize = wsize = 800 // N
 
     def get_frame(_rel_no):
@@ -164,8 +216,11 @@ def show_images(frame_no, frames, N=19, stride=1, image_transforms=None,
 
     def get_caption(_rel_no):
         abs_no = _rel_no + frame_no
+        cl = "N"
+        if str(track_id) in classes and str(abs_no) in classes[str(track_id)]:
+            cl = classes[str(track_id)][str(abs_no)]
         if show_caption:
-            return str(abs_no) if rel_no != 0 or not frame_arrow else "↑"
+            return f'{str(abs_no)}{os.linesep}({cl})' if rel_no != 0 or not frame_arrow else f"↑{os.linesep}({cl})"
 
         return "" if rel_no != 0 or not frame_arrow else "↑"
 
